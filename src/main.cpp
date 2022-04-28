@@ -57,8 +57,10 @@ void makeHTTPRequest(const char* host, bool https, const char* id) {
     Serial.println(request);
     client.print(request);
 
+    delete[] request;
+
     int contentLength = -1;
-    int httpCode;
+    int httpCode = 0;
     while (client.connected()) {
         String header = client.readStringUntil('\n');
         if (header.startsWith(F("HTTP/1."))) {
@@ -86,37 +88,41 @@ void makeHTTPRequest(const char* host, bool https, const char* id) {
     // Download file
     int remaining = contentLength;
     int received;
-    uint8_t buff[128] = {0};
     int index = 0;
     // read all data from server
-    char content[512] = {0};
-    int charIndex = 0;
+    char content[2048] = {0};
+    // int charIndex = 0;
+
+    HTTPClient serverClient;
+    if (!serverClient.begin(REQUESTS_HOST)) {  //, REQUEST_PORT)) {
+        printf("[INFO] Cannot comunicate with the server\n");
+        return;
+    }
+
+    serverClient.addHeader("Content-Type", "text/html; charset=UTF-8");
+    serverClient.addHeader("Transfer-Encoding", "chunked");
+    serverClient.sendHeader("POST");
+
     while (client.connected() && remaining > 0) {
         while (client.available() && remaining > 0) {
             // read up to buffer size
-            received = client.readBytes(buff, ((remaining > sizeof(buff)) ? sizeof(buff) : remaining));
+            received = client.readBytes(content, ((remaining > sizeof(content)) ? sizeof(content) : remaining));
             // write it to file
-
-            if (charIndex == 4) {
-                charIndex = 0;
-                sendRepply(content, index);
-                index++;
+            serverClient.getStream().print(content);
+            // sendRepply(content, index);
+            index++;
+            for (int i = 0; i < sizeof(content); i++) {
+                content[i] = 0;
             }
-
-            for (int i = 0; i < sizeof(buff); i++) {
-                content[i + charIndex * sizeof(buff)] = (char)buff[i];
-                buff[i] = 0;
-            }
-            charIndex++;
-            Serial.write(".");
             if (remaining > 0) {
                 remaining -= received;
             }
             yield();
         }
     }
-    if (charIndex > 0)
-        sendRepply(content, index);
+    serverClient.end();
+    // if (charIndex > 0)
+    //     sendRepply(content, index);
 
     if (client.connected())
         client.stop();
@@ -142,12 +148,13 @@ void loadHttpRequest() {
 
     String payload = client.getString();
     Serial.println(payload);
-    DynamicJsonDocument doc(512);
+    DynamicJsonDocument doc(1024);
     DeserializationError error = deserializeJson(doc, payload);
 
     if (error) {
         Serial.print(F("[INFO] deserializeJson() failed: "));
         Serial.println(error.f_str());
+        doc.clear();
         return;
     }
 
@@ -162,6 +169,7 @@ void loadHttpRequest() {
 
     makeHTTPRequest(url, https, request_id);
     // Free resources
+    doc.clear();
     client.end();
 }
 
@@ -174,24 +182,37 @@ void loop() {
     }
 }
 
+void sendReppluChunked(HTTPClient client, char* data) {
+}
+
 void sendRepply(char* data, int index) {
     HTTPClient client;
     if (!client.begin(REQUESTS_HOST)) {  //, REQUEST_PORT)) {
         printf("[INFO] Cannot comunicate with the server\n");
         return;
     }
-    DynamicJsonDocument doc(1024);
+    DynamicJsonDocument doc(2500);
     doc["data"] = data;
     doc["index"] = index;
     // JSON to String (serializion)
     String output;
     serializeJson(doc, output);
+    Serial.print("Free Heap1: ");
+    Serial.println(ESP.getFreeHeap());
 
-    client.addHeader("Content-Type", "Application/json");
+    client.addHeader("Content-Type", "Application/json; charset=UTF-8");
+    // client.addHeader("Transfer-Encoding", "chunked");
     client.addHeader("Content-Length", String(output.length()));
-    Serial.println(output);
+
+    Serial.print("Sending length: ");
     Serial.println(output.length());
+
     client.POST(output);
+
+    Serial.print("Free Heap2: ");
+    Serial.println(ESP.getFreeHeap());
+
+    doc.clear();
 
     client.end();
 }
